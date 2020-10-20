@@ -1,9 +1,9 @@
 import {Component, EventEmitter, Input, OnInit, Output} from '@angular/core';
-import {AngularFireAuth} from '@angular/fire/auth';
 import {User} from 'firebase';
 import {Observable} from 'rxjs';
 import {MatDialog} from '@angular/material/dialog';
 import {UserComponent} from '..';
+import { AuthProcessService } from '../../services/auth-process.service';
 
 export interface LinkMenuItem {
   text: string;
@@ -48,15 +48,14 @@ export class NgxAuthFirebaseuiAvatarComponent implements OnInit {
   onSignOut: EventEmitter<void> = new EventEmitter();
 
   user: User;
-  user$: Observable<User | null>;
+  user$: Observable<User | null> = this.aps.user$;
   displayNameInitials: string | null;
 
-  constructor(public afa: AngularFireAuth,
+  constructor(public aps: AuthProcessService,
               public dialog: MatDialog) {
   }
 
   ngOnInit() {
-    this.user$ = this.afa.user;
     this.user$.subscribe((user: User) => {
       this.user = user;
       this.displayNameInitials = user ? this.getDisplayNameInitials(user.displayName) : null;
@@ -81,7 +80,7 @@ export class NgxAuthFirebaseuiAvatarComponent implements OnInit {
 
   async signOut() {
     try {
-      await this.afa.signOut();
+      await this.aps.signOut();
       // Sign-out successful.
       this.onSignOut.emit();
     } catch (e) {

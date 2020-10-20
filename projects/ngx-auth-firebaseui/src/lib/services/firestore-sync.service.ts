@@ -1,6 +1,6 @@
-import {Injectable} from '@angular/core';
-import {AngularFirestore, AngularFirestoreDocument} from '@angular/fire/firestore';
-import {UserInfo} from 'firebase';
+import { Injectable, Injector } from '@angular/core';
+import { AngularFirestore, AngularFirestoreDocument } from '@angular/fire/firestore';
+import { UserInfo } from 'firebase';
 
 export const collections = {
   users: 'users',
@@ -11,8 +11,9 @@ export const collections = {
 })
 export class FirestoreSyncService {
 
-  constructor(public afs: AngularFirestore) {
-    // this.afs.firestore.settings({timestampsInSnapshots: true});
+  constructor(
+    public afs: AngularFirestore
+  ) {
   }
 
   // get timestamp() {
@@ -40,6 +41,6 @@ export class FirestoreSyncService {
       phoneNumber: user.phoneNumber,
       providerId: user.providerId
     };
-    return userRef.set(data, {merge: true});
+    return userRef.set(data, { merge: true });
   }
 }

@@ -60,6 +60,9 @@
     "@angular/forms": "^9.0.0",
     "@angular/material": "^9.0.0",
     "@angular/router": "^9.0.0",
+    "@capacitor-community/apple-sign-in": "^5.29.0",
+    "@ionic-native/sign-in-with-apple": "^0.1.2",
+    "capacitor-firebase-auth": "^2.3.2",
     "firebase": "^7.8.1",
     "tslib": "^1.10.0"
   },

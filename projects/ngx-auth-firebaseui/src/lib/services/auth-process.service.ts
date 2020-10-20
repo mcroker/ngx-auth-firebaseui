@@ -1,16 +1,21 @@
-import { EventEmitter, forwardRef, Inject, Injectable } from '@angular/core';
+import { EventEmitter, forwardRef, Inject, Injectable, OnInit } from '@angular/core';
 import { AngularFireAuth } from '@angular/fire/auth';
 import { firebase } from '@firebase/app';
 import '@firebase/auth';
 import { User, UserInfo } from 'firebase/app';
 import { BehaviorSubject, Observable } from 'rxjs';
-import { map, take } from 'rxjs/operators';
+import { map, take, filter } from 'rxjs/operators';
 import { Accounts } from '../enums';
 import { FirestoreSyncService } from './firestore-sync.service';
 import { MAT_SNACK_BAR_DEFAULT_OPTIONS, MatSnackBar, MatSnackBarConfig } from '@angular/material/snack-bar';
 import { ICredentials, ISignInProcess, ISignUpProcess, NgxAuthFirebaseUIConfig } from '../interfaces';
 import { NgxAuthFirebaseUIConfigToken } from '../tokens';
 import UserCredential = firebase.auth.UserCredential;
+import { cfaSignIn, cfaSignInPhoneOnCodeSent, cfaSignInPhoneOnCodeReceived } from 'capacitor-firebase-auth';
+import { ActivatedRoute, NavigationEnd, Router } from '@angular/router';
+import { SignInWithApple, AppleSignInResponse, AppleSignInErrorResponse, ASAuthorizationAppleIDRequest } from '@ionic-native/sign-in-with-apple/ngx';
+import { Cordova } from '@ionic-native/core';
+import { Capacitor } from '@capacitor/core';
 
 export const facebookAuthProvider = new firebase.auth.FacebookAuthProvider();
 export const googleAuthProvider = new firebase.auth.GoogleAuthProvider();
@@ -34,12 +39,18 @@ export enum AuthProvider {
   PhoneNumber = 'phoneNumber'
 }
 
+function isUserCredentials(x: any): x is UserCredential {
+  return (undefined !== x.user && undefined !== x.credential);
+}
+
 @Injectable({
   providedIn: 'root'
 })
 export class AuthProcessService implements ISignInProcess, ISignUpProcess {
   onSuccessEmitter: EventEmitter<any> = new EventEmitter<any>();
   onErrorEmitter: EventEmitter<any> = new EventEmitter<any>();
+
+  // public afa: AngularFireAuth | undefined;
 
   // Useful to know about auth state even between reloads.
   // Replace emailConfirmationSent and emailToConfirm.
@@ -63,12 +74,50 @@ export class AuthProcessService implements ISignInProcess, ISignUpProcess {
   emailToConfirm: string;
 
   constructor(
-    public afa: AngularFireAuth,
     @Inject(forwardRef(() => NgxAuthFirebaseUIConfigToken)) public config: NgxAuthFirebaseUIConfig,
     private snackBar: MatSnackBar,
+    @Inject(MAT_SNACK_BAR_DEFAULT_OPTIONS) private matSnackBarConfig: MatSnackBarConfig,
     private fireStoreService: FirestoreSyncService,
-    @Inject(MAT_SNACK_BAR_DEFAULT_OPTIONS) private matSnackBarConfig: MatSnackBarConfig
+    public afa: AngularFireAuth,
+    private router: Router,
+    private signInWithAppleService: SignInWithApple
   ) {
+    // this.watchRouterForCredentials();
+  }
+
+  watchRouterForCredentials() {
+    this.router.events
+      .pipe(
+        filter(event => event instanceof NavigationEnd)
+      )
+      .subscribe(async event => {
+        console.log('NAV END RESULT');
+        console.log(event);
+        try {
+          const result = await firebase.auth().getRedirectResult();
+          if (result.credential) {
+            // This gives you a Google Access Token. You can use it to access the Google API.
+            var token = result.credential;
+            // ...
+          }
+          // The signed-in user info.
+          this._user$.next(result.user);
+        } catch (error) {
+          console.log('ERROR', error);
+          // Handle Errors here.
+          var errorCode = error.code;
+          var errorMessage = error.message;
+          // The email of the user's account used.
+          var email = error.email;
+          // The firebase.auth.AuthCredential type that was used.
+          var credential = error.credential;
+          // ...
+        }
+      });
+  }
+
+  get isWebPlatform(): boolean {
+    return ['https:', 'http:', 'chrome-extension'].includes(location.protocol);
   }
 
   listenToUserEvents() {
@@ -76,6 +125,21 @@ export class AuthProcessService implements ISignInProcess, ISignUpProcess {
       this._user$.next(user);
       this.user = user;
     });
+  }
+
+  async signInWithPhone() {
+    cfaSignIn('phone', { phone: '+447770936977' }).subscribe(
+      user => console.log('USER>', user),
+      error => console.error('ERROR', error)
+    );
+    // Android and iOS
+    cfaSignInPhoneOnCodeSent().subscribe(
+      verificationId => console.log('VIDS>', verificationId)
+    );
+    // Android Only
+    cfaSignInPhoneOnCodeReceived().subscribe(
+      (event: { verificationId: string, verificationCode: string }) => console.log(`VIDR> ${event.verificationId}:${event.verificationCode}`)
+    );
   }
 
   /**
@@ -102,7 +166,7 @@ export class AuthProcessService implements ISignInProcess, ISignUpProcess {
    */
   public async signInWith(provider: AuthProvider, credentials?: ICredentials) {
     try {
-      let signInResult: UserCredential | any;
+      let signInResult: UserCredential | User | any;
 
       switch (provider) {
         case AuthProvider.ANONYMOUS:
@@ -114,31 +178,73 @@ export class AuthProcessService implements ISignInProcess, ISignUpProcess {
           break;
 
         case AuthProvider.Google:
-          signInResult = await this.afa.signInWithPopup(googleAuthProvider) as UserCredential;
+          if (this.isWebPlatform) {
+            signInResult = await this.afa.signInWithPopup(googleAuthProvider) as UserCredential;
+          } else {
+            signInResult = await cfaSignIn('google.com').toPromise();
+          }
           break;
 
         case AuthProvider.Apple:
-          signInResult = await this.afa.signInWithPopup(appleAuthProvider) as UserCredential;
+          if (this.isWebPlatform) {
+            signInResult = await this.afa.signInWithPopup(appleAuthProvider) as UserCredential;
+          } else if (Capacitor.platform === 'ios') {
+            // Currently CapactiorFirebaseAuth doesn't support apple... but that will 
+            // change in next version - it's being worked on on the next branch
+            // In the interim the Cordova SignInWithApple plugin can be used to retrieve apple
+            // credentials and passed to afa.
+            const res: AppleSignInResponse = await this.signInWithAppleService.signin({
+              requestedScopes: [
+                ASAuthorizationAppleIDRequest.ASAuthorizationScopeFullName,
+                ASAuthorizationAppleIDRequest.ASAuthorizationScopeEmail
+              ]
+            });
+            const credential = new firebase.auth.OAuthProvider("apple.com").credential(res.identityToken);
+            signInResult = await this.afa.signInWithCredential(credential);
+          } else {
+            throw new Error('Doesn\'t yet handle web flow on android');
+          }
           break;
 
         case AuthProvider.Facebook:
-          signInResult = await this.afa.signInWithPopup(facebookAuthProvider) as UserCredential;
+          if (this.isWebPlatform) {
+            signInResult = await this.afa.signInWithPopup(facebookAuthProvider) as UserCredential;
+          } else {
+            signInResult = await cfaSignIn('facebook.com').toPromise();
+          }
           break;
 
         case AuthProvider.Twitter:
-          signInResult = await this.afa.signInWithPopup(twitterAuthProvider) as UserCredential;
+          if (this.isWebPlatform) {
+            signInResult = await this.afa.signInWithPopup(twitterAuthProvider) as UserCredential;
+          } else {
+            signInResult = await cfaSignIn('twitter.com').toPromise();
+          }
           break;
 
         case AuthProvider.Github:
-          signInResult = await this.afa.signInWithPopup(githubAuthProvider) as UserCredential;
+          if (this.isWebPlatform) {
+            signInResult = await this.afa.signInWithPopup(githubAuthProvider) as UserCredential;
+          } else {
+            // Github platform not supported by Capacitor-Firebase-Auth yet
+          }
           break;
 
         case AuthProvider.Microsoft:
+          if (this.isWebPlatform) {
+            signInResult = await this.afa.signInWithPopup(githubAuthProvider) as UserCredential;
+          } else {
+            // Microsoft platform not supported by Capacitor-Firebase-Auth yet
+          }
           signInResult = await this.afa.signInWithPopup(microsoftAuthProvider) as UserCredential;
           break;
 
         case AuthProvider.Yahoo:
-          signInResult = await this.afa.signInWithPopup(yahooAuthProvider) as UserCredential;
+          if (this.isWebPlatform) {
+            signInResult = await this.afa.signInWithPopup(githubAuthProvider) as UserCredential;
+          } else {
+            // Yahoo platform not supported by Capacitor-Firebase-Auth yet
+          }
           break;
 
         case AuthProvider.PhoneNumber:
@@ -148,7 +254,13 @@ export class AuthProcessService implements ISignInProcess, ISignUpProcess {
         default:
           throw new Error(`${AuthProvider[provider]} is not available as auth provider`);
       }
-      await this.handleSuccess(signInResult);
+
+      if (isUserCredentials(signInResult)) {
+        await this.handleSuccess(signInResult.user);
+      } else {
+        await this.handleSuccess(signInResult);
+      }
+
     } catch (err) {
       this.handleError(err);
     }
@@ -187,7 +299,7 @@ export class AuthProcessService implements ISignInProcess, ISignUpProcess {
       this.emailConfirmationSent = true;
       this.emailToConfirm = credentials.email;
 
-      await this.handleSuccess(userCredential);
+      await this.handleSuccess(userCredential.user);
     } catch (err) {
       this.handleError(err);
     }
@@ -219,9 +331,9 @@ export class AuthProcessService implements ISignInProcess, ISignUpProcess {
   public updateProfile(name: string, photoURL: string): Promise<void> {
     return this.afa.currentUser.then((user: User) => {
       if (!photoURL) {
-        return user.updateProfile({displayName: name});
+        return user.updateProfile({ displayName: name });
       } else {
-        return user.updateProfile({displayName: name, photoURL});
+        return user.updateProfile({ displayName: name, photoURL });
       }
     });
   }
@@ -263,17 +375,17 @@ export class AuthProcessService implements ISignInProcess, ISignUpProcess {
     // todo: 3.1.18
   }
 
-  async handleSuccess(userCredential: UserCredential) {
-    this.onSuccessEmitter.next(userCredential.user);
+  async handleSuccess(user: User) {
+    this.onSuccessEmitter.next(user);
     if (this.config.enableFirestoreSync) {
       try {
-        await this.fireStoreService.updateUserData(this.parseUserInfo(userCredential.user));
+        await this.fireStoreService.updateUserData(this.parseUserInfo(user));
       } catch (e) {
         console.error(`Error occurred while updating user data with firestore: ${e}`);
       }
     }
     if (this.config.toastMessageOnAuthSuccess) {
-      const fallbackMessage = `Hello ${userCredential.user.displayName ? userCredential.user.displayName : ''}!`;
+      const fallbackMessage = `Hello ${user.displayName ? user.displayName : ''}!`;
       this.showToast(this.messageOnAuthSuccess || fallbackMessage);
     }
   }
